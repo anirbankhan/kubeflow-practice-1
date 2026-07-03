@@ -1,0 +1,98 @@
+# After creating eks , create the ebs add on
+
+eksctl utils associate-iam-oidc-provider --region=us-east-1 --cluster=kubeflow-eks-cluster --approve
+
+eksctl create iamserviceaccount \
+    --name ebs-csi-controller-sa \
+    --namespace kube-system \
+    --cluster kubeflow-eks-cluster \
+    --region us-east-1 \
+    --role-name AmazonEKS_EBS_CSI_DriverRole \
+    --role-only \
+    --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+    --approve
+
+
+eksctl create addon \
+ --name aws-ebs-csi-driver \
+ --cluster kubeflow-eks-cluster \
+ --region us-east-1 \
+ --service-account-role-arn arn:aws:iam::937387180258:role/AmazonEKS_EBS_CSI_DriverRole \
+ --force
+
+# create the storageclass required for pvc claim
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-sc
+  annotations:
+    # Makes this the default StorageClass for the cluster
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  type: gp3
+  encrypted: "true"
+
+
+# install Kubeflow inside eks cluster
+
+
+  553  export PIPELINE_VERSION=2.14.3
+  554  kubectl apply -k
+  555  kubectl apply -k "github.com/kubeflow/pipelines/manifests/kustomize/cluster-scoped-resources?ref=$PIPELINE_VERSION"
+  556  kubectl wait --for condition=established --timeout=60s crd/applications.app.k8s.io
+       kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml
+       kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+
+  557  kubectl apply -k "github.com/kubeflow/pipelines/manifests/kustomize/env/platform-agnostic?ref=$PIPELINE_VERSION"
+  558  kubectl get all -n kubeflow
+  559  kubectl set image deployment/minio
+  560  kubectl set image deployment/minio minio=minio/minio:RELEASE.2023-03-20T20-16-18Z -n Kubeflow
+
+
+## work around in eks cluster if cacheserver and cachedeployer is not coming up #########
+
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cache-selfsigned-issuer
+  namespace: kubeflow
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: webhook-server
+  namespace: kubeflow
+spec:
+  secretName: webhook-server-tls
+  duration: 8760h # 1 year
+  renewBefore: 360h
+  commonName: cache-server.kubeflow.svc
+  dnsNames:
+    - cache-server.kubeflow.svc
+    - cache-server.kubeflow.svc.cluster.local
+  issuerRef:
+    name: cache-selfsigned-issuer
+    kind: Issuer
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    size: 2048
+  usages:
+    - server auth
+    - client auth
+
+
+### open the ui on localhost ####
+
+kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80
+
+
+
+
